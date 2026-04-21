@@ -1,0 +1,1205 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Safe delay queue — recovery (Celo)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/6.13.1/ethers.umd.min.js"></script>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #f7f8fa;
+        color: #1a1a1a;
+        min-height: 100vh;
+      }
+      .container { max-width: 640px; margin: 0 auto; padding: 40px 20px; }
+      .card {
+        background: #fff;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06), 0 4px 16px rgba(0,0,0,0.04);
+        overflow: hidden;
+      }
+      .card-header {
+        padding: 24px 28px 20px;
+        border-bottom: 1px solid #eef0f3;
+      }
+      .card-header h1 { font-size: 20px; font-weight: 700; color: #111; margin-bottom: 4px; }
+      .card-header p { font-size: 13px; color: #888; line-height: 1.5; }
+      .card-body { padding: 28px; }
+      .form-group { margin-bottom: 14px; }
+      .form-group label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600; color: #555;
+        margin-bottom: 5px;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+      }
+      input, select, textarea {
+        width: 100%;
+        padding: 10px 12px;
+        border: 1px solid #dde0e4;
+        border-radius: 8px;
+        font-size: 14px;
+        color: #1a1a1a;
+        background: #fff;
+        transition: border-color 0.2s, box-shadow 0.2s;
+        font-family: inherit;
+      }
+      textarea { min-height: 72px; font-family: "SF Mono", Menlo, monospace; font-size: 12px; }
+      input:focus, select:focus, textarea:focus {
+        outline: none;
+        border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59,130,246,0.1);
+      }
+      .hint { font-size: 12px; color: #888; margin-top: 6px; line-height: 1.45; }
+      .status-box {
+        display: flex; align-items: flex-start; gap: 10px;
+        padding: 12px 16px; border-radius: 8px; margin-bottom: 16px;
+        font-size: 13px; font-weight: 500;
+      }
+      .status-box.info { background: #eff6ff; color: #1d4ed8; }
+      .status-box.success { background: #f0fdf4; color: #16a34a; }
+      .status-box.error { background: #fef2f2; color: #dc2626; }
+      .status-box.waiting { background: #f8f9fa; color: #666; }
+      .status-icon {
+        width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+        display: flex; align-items: center; justify-content: center;
+        font-size: 11px; font-weight: 700;
+      }
+      .status-box.info .status-icon { background: #3b82f6; color: #fff; }
+      .status-box.success .status-icon { background: #22c55e; color: #fff; }
+      .status-box.error .status-icon { background: #ef4444; color: #fff; }
+      .status-box.waiting .status-icon { background: #ddd; color: #666; }
+      .spinner {
+        width: 20px; height: 20px; border-radius: 50%; flex-shrink: 0;
+        border: 2px solid #3b82f6; border-top-color: transparent;
+        animation: spin 0.6s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      button {
+        padding: 10px 20px;
+        border: none; border-radius: 8px;
+        font-size: 14px; font-weight: 600; cursor: pointer;
+        transition: all 0.15s;
+      }
+      button:disabled { background: #e8eaed; color: #aaa; cursor: not-allowed; }
+      .btn-primary { background: #3b82f6; color: #fff; }
+      .btn-primary:hover:not(:disabled) { background: #2563eb; }
+      .btn-success { background: #22c55e; color: #fff; }
+      .btn-success:hover:not(:disabled) { background: #16a34a; }
+      .btn-ghost { background: transparent; color: #555; border: 1.5px solid #dde0e4; }
+      .btn-ghost:hover:not(:disabled) { border-color: #999; }
+      .btn-row { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 8px; }
+      .mono { font-family: "SF Mono", Menlo, monospace; font-size: 12px; word-break: break-all; }
+      .queue-item {
+        border: 1px solid #eef0f3; border-radius: 10px; padding: 16px; margin-bottom: 12px;
+        background: #fafbfc;
+      }
+      .queue-item.head { border-color: #93c5fd; background: #eff6ff; }
+      .queue-item h3 { font-size: 14px; margin-bottom: 10px; color: #111; }
+      .kv { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; margin-bottom: 6px; }
+      .kv span:first-child { color: #888; flex-shrink: 0; }
+      .badge {
+        display: inline-block; padding: 2px 8px; border-radius: 4px;
+        font-size: 11px; font-weight: 700; text-transform: uppercase;
+      }
+      .badge.cool { background: #e0e7ff; color: #3730a3; }
+      .badge.ready { background: #dcfce7; color: #166534; }
+      .badge.expired { background: #fee2e2; color: #991b1b; }
+      .log-section { border-top: 1px solid #eef0f3; padding: 16px 28px 20px; }
+      .log-header {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 8px; cursor: pointer; user-select: none;
+      }
+      .log-header span { font-size: 12px; font-weight: 600; color: #999; text-transform: uppercase; }
+      #log {
+        padding: 10px 12px; background: #f8f9fa; border-radius: 8px;
+        font-family: "SF Mono", Menlo, monospace; font-size: 11px; line-height: 1.7;
+        max-height: 180px; overflow-y: auto; color: #666; display: none;
+      }
+      #log.open { display: block; }
+      .op-selector { display: flex; gap: 8px; margin-bottom: 0; flex-wrap: wrap; }
+      .op-selector input { display: none; }
+      .op-selector label {
+        flex: 1; min-width: 100px; text-align: center; padding: 8px 4px;
+        border: 1.5px solid #dde0e4; border-radius: 8px; font-size: 12px;
+        font-weight: 600; color: #666; cursor: pointer; margin-bottom: 0;
+        text-transform: none; letter-spacing: 0;
+      }
+      .op-selector input:checked + label {
+        border-color: #3b82f6; background: #eff6ff; color: #3b82f6;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="card">
+        <div class="card-header">
+          <h1>Delay module queue</h1>
+          <p>
+            Connect a wallet (the delay module <strong>owner</strong>), enter your Safe on <strong>Celo</strong>, then queue a USDC/USDT withdrawal or execute after cooldown.
+            Queued ERC-20 transfers use the same EIP-712 + delay flow as the main app. Pending transfer details are saved in
+            <span class="mono">localStorage</span> (key <span class="mono">gp-ui.pending-transactions_&lt;safe&gt;</span>) so execute fields can be restored after refresh.
+            Manual executes still require <span class="mono">to</span> / <span class="mono">value</span> / <span class="mono">data</span> matching <span class="mono">getTxHash</span>.
+          </p>
+        </div>
+        <div class="card-body">
+          <div id="wallet-status" class="status-box waiting">
+            <div class="status-icon">1</div>
+            <span>Wallet not connected</span>
+          </div>
+          <div class="btn-row" style="margin-bottom: 20px;">
+            <button type="button" id="connectBtn" class="btn-primary">Connect wallet</button>
+            <button type="button" id="disconnectBtn" class="btn-ghost" disabled>Disconnect</button>
+          </div>
+          <p id="celoBalance" class="hint mono" style="display: none; margin-bottom: 16px;"></p>
+
+          <div class="form-group">
+            <label>Safe address</label>
+            <input type="text" id="safeInput" placeholder="0x…" autocomplete="off" />
+            <p class="hint">
+              Celo mainnet. Delay module is CREATE2-predicted from this Safe using the <strong>Celo</strong> delay master copy
+              (<span class="mono">0x01F8…339b</span> per <span class="mono">gp-chain-actions</span>), not the Gnosis-only copy.
+            </p>
+          </div>
+          <div class="form-group">
+            <label>Delay module address (optional override)</label>
+            <input type="text" id="delayOverride" placeholder="Leave empty to predict from Safe" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label>Delay module in use</label>
+            <p id="delayModulePreview" class="hint mono" style="margin-top: 4px; color: #666;">
+              Enter a valid Safe address to see the predicted delay module (CREATE2).
+            </p>
+          </div>
+
+          <div class="btn-row">
+            <button type="button" id="refreshBtn" class="btn-primary" disabled>Refresh queue</button>
+          </div>
+
+          <div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid #eef0f3;">
+            <h2 style="font-size: 16px; margin-bottom: 12px;">Queue ERC-20 withdrawal</h2>
+            <p class="hint" style="margin-bottom: 14px;">
+              Signs EIP-712 (<span class="mono">ModuleTx</span>) and sends <span class="mono">execTransactionFromModule</span> on the delay module to enqueue a Safe transfer of USDC or USDT (Celo).
+            </p>
+            <div class="form-group">
+              <label>Token</label>
+              <select id="withdrawToken">
+                <option value="USDC">USDC</option>
+                <option value="USDT">USDT</option>
+              </select>
+            </div>
+            <p id="safeTokenBalance" class="hint mono" style="margin-bottom: 14px; color: #333;">
+              Enter a Safe and connect a wallet to load balance.
+            </p>
+            <div class="form-group">
+              <label>Recipient</label>
+              <input type="text" id="withdrawRecipient" placeholder="0x…" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label>Amount (token units)</label>
+              <input type="text" id="withdrawAmount" placeholder="e.g. 10.5" autocomplete="off" />
+            </div>
+            <div class="btn-row">
+              <button type="button" id="queueWithdrawBtn" class="btn-primary" disabled>Sign &amp; queue transfer</button>
+            </div>
+            <p id="queueWithdrawStatus" class="hint" style="margin-top: 10px; display: none;"></p>
+          </div>
+
+          <div id="delay-meta" style="margin-top: 16px; display: none;">
+            <p class="hint mono" id="nonceLine"></p>
+          </div>
+
+          <div id="queue-mount" style="margin-top: 20px;"></div>
+
+          <div id="execute-panel" style="margin-top: 24px; display: none;">
+            <h2 style="font-size: 16px; margin-bottom: 12px;">Execute next transaction</h2>
+            <p class="hint" style="margin-bottom: 14px;">
+              Only the head of the queue (<span class="mono">txNonce</span>) can be executed. Fields must match the queued call so
+              <span class="mono">getTransactionHash</span> equals <span class="mono">getTxHash(txNonce)</span>.
+            </p>
+            <p id="execAutofillHint" class="status-box success" style="display: none; padding: 10px 14px; font-size: 12px;"></p>
+            <div class="form-group">
+              <label>To</label>
+              <input type="text" id="execTo" placeholder="0x…" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label>Value (wei)</label>
+              <input type="text" id="execValue" placeholder="0" inputmode="numeric" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label>Data (hex)</label>
+              <textarea id="execData" placeholder="0x"></textarea>
+            </div>
+            <div class="form-group">
+              <label>Operation</label>
+              <div class="op-selector">
+                <input type="radio" name="execOp" id="op-call" value="0" checked />
+                <label for="op-call">Call (0)</label>
+                <input type="radio" name="execOp" id="op-delegate" value="1" />
+                <label for="op-delegate">DelegateCall (1)</label>
+              </div>
+            </div>
+            <div id="hash-status" class="status-box waiting" style="display: none;"></div>
+            <div class="btn-row">
+              <button type="button" id="executeBtn" class="btn-success" disabled>Execute when ready</button>
+            </div>
+          </div>
+
+          <div id="skip-panel" style="margin-top: 16px; display: none;">
+            <button type="button" id="skipExpiredBtn" class="btn-ghost">Skip expired transaction(s)</button>
+            <p class="hint">Calls <span class="mono">skipExpired</span> on the delay module when the head item has passed its expiration window.</p>
+          </div>
+        </div>
+
+        <div class="log-section">
+          <div class="log-header" id="logToggle">
+            <span>Log</span>
+            <span style="font-size: 11px; color: #bbb;">Show / hide</span>
+          </div>
+          <div id="log"></div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        /** Celo mainnet — https://docs.celo.org */
+        const CELO_CHAIN_ID = 42220n;
+        const CELO_CHAIN_ID_NUM = 42220;
+        const MODULE_PROXY_FACTORY = "0x000000000000addb49795b0f9ba5bc298cdda236";
+        /**
+         * Celo uses the canonical delay master copy from `gp-chain-actions/src/chainAddresses.ts`.
+         * Gnosis chain overrides to 0x4A97… — do not use that address here or CREATE2 prediction is wrong.
+         */
+        const DELAY_MASTER_COPY = "0x01F8cabB808D7dE0dF4202D4B60C8310d2f1339b";
+        const Operation = { Call: 0, DelegateCall: 1 };
+
+        /** Celo — matches gp-auth-module-ui `currencies.ts` */
+        const TOKENS = {
+          USDC: {
+            tokenSymbol: "USDC",
+            address: "0xceba9300f2b948710d2653dd7b07f33a8b32118c",
+            decimals: 6,
+          },
+          USDT: {
+            tokenSymbol: "USDT",
+            address: "0x48065fbbe25f71c9282ddf5e1cd6d6a887483d5e",
+            decimals: 6,
+          },
+        };
+
+        const STORAGE_KEY_PREFIX = "gp-ui.pending-transactions";
+
+        const ERC20_ABI = [
+          "function balanceOf(address account) view returns (uint256)",
+          "function transfer(address to, uint256 amount) returns (bool)",
+        ];
+
+        const DELAY_ENCODE_IFACE = new ethers.Interface([
+          "function execTransactionFromModule(address to,uint256 value,bytes data,uint8 operation) returns (bool)",
+        ]);
+
+        const DELAY_ABI = [
+          "function txNonce() view returns (uint256)",
+          "function queueNonce() view returns (uint256)",
+          "function txCooldown() view returns (uint256)",
+          "function txExpiration() view returns (uint256)",
+          "function getTxCreatedAt(uint256 _nonce) view returns (uint256)",
+          "function getTxHash(uint256 _nonce) view returns (bytes32)",
+          "function getTransactionHash(address to, uint256 value, bytes data, uint8 operation) pure returns (bytes32)",
+          "function executeNextTx(address to, uint256 value, bytes data, uint8 operation)",
+          "function skipExpired()",
+        ];
+
+        const logEl = document.getElementById("log");
+        function log(msg) {
+          const ts = new Date().toLocaleTimeString();
+          logEl.textContent += "[" + ts + "] " + msg + "\n";
+          logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        document.getElementById("logToggle").addEventListener("click", () => {
+          logEl.classList.toggle("open");
+        });
+
+        function predictDelayModAddress(safeAddress) {
+          const safe = ethers.getAddress(safeAddress);
+          const abiCoder = ethers.AbiCoder.defaultAbiCoder();
+          const initializer = abiCoder.encode(
+            ["address", "address", "address", "uint256", "uint256"],
+            [safe, safe, safe, 0, 0]
+          );
+          const delayIface = new ethers.Interface(["function setUp(bytes initializeParams)"]);
+          const encodedSetUp = delayIface.encodeFunctionData("setUp", [initializer]);
+          const mastercopy = DELAY_MASTER_COPY.toLowerCase().replace(/^0x/, "");
+          const bytecode =
+            "0x602d8060093d393df3363d3d373d3d3d363d73" + mastercopy + "5af43d82803e903d91602b57fd5bf3";
+          const initCodeHash = ethers.keccak256(bytecode);
+          const inner = ethers.solidityPackedKeccak256(["bytes"], [encodedSetUp]);
+          const salt = ethers.solidityPackedKeccak256(["bytes32", "uint256"], [inner, 0n]);
+          return ethers.getCreate2Address(MODULE_PROXY_FACTORY, salt, initCodeHash);
+        }
+
+        function storageKeyForSafe(safeAddress) {
+          return STORAGE_KEY_PREFIX + "_" + ethers.getAddress(safeAddress).toLowerCase();
+        }
+
+        function getStoredTransactions(safeAddress) {
+          try {
+            const raw = localStorage.getItem(storageKeyForSafe(safeAddress));
+            if (!raw) return [];
+            return JSON.parse(raw);
+          } catch (e) {
+            console.error(e);
+            return [];
+          }
+        }
+
+        function storeTransaction(safeAddress, transaction) {
+          try {
+            const list = getStoredTransactions(safeAddress);
+            list.push(transaction);
+            localStorage.setItem(storageKeyForSafe(safeAddress), JSON.stringify(list));
+          } catch (e) {
+            console.error(e);
+            log("localStorage error: " + e.message);
+          }
+        }
+
+        function removeTransaction(safeAddress, timestamp) {
+          try {
+            const list = getStoredTransactions(safeAddress);
+            const next = list.filter((tx) => tx.timestamp !== timestamp);
+            localStorage.setItem(storageKeyForSafe(safeAddress), JSON.stringify(next));
+          } catch (e) {
+            console.error(e);
+          }
+        }
+
+        function saltFromTimestamp() {
+          return ethers.AbiCoder.defaultAbiCoder().encode(["uint256"], [Date.now()]);
+        }
+
+        function encodeDelayModEnqueueCall(transaction) {
+          return DELAY_ENCODE_IFACE.encodeFunctionData("execTransactionFromModule", [
+            transaction.to,
+            transaction.value,
+            transaction.data,
+            Operation.Call,
+          ]);
+        }
+
+        function generateModifierTypedData(safeAccount, transaction, delayModOverrideAddress) {
+          const account = ethers.getAddress(safeAccount);
+          const delayModAddress = delayModOverrideAddress
+            ? ethers.getAddress(delayModOverrideAddress)
+            : predictDelayModAddress(account);
+          const encodedData = encodeDelayModEnqueueCall(transaction);
+          const salt = saltFromTimestamp();
+          if (!/^[0-9a-fA-F]{64}$/i.test(salt.replace(/^0x/i, ""))) {
+            throw new Error("Invalid salt for EIP-712: " + salt);
+          }
+          const domain = { verifyingContract: delayModAddress, chainId: CELO_CHAIN_ID_NUM };
+          const types = {
+            ModuleTx: [
+              { name: "data", type: "bytes" },
+              { name: "salt", type: "bytes32" },
+            ],
+          };
+          const message = { data: encodedData, salt };
+          return { domain, types, message, delayModAddress, encodedData, salt };
+        }
+
+        function buildEnqueueCalldata(encodedData, salt, signature) {
+          return ethers.concat([encodedData, salt, signature]);
+        }
+
+        function findStoredForQueueItem(safeAddress, chainHash, nonce) {
+          if (!chainHash || chainHash === ethers.ZeroHash) return null;
+          const h = chainHash.toLowerCase();
+          const n = Number(nonce);
+          return (
+            getStoredTransactions(safeAddress).find(
+              (s) =>
+                (s.txHash && s.txHash.toLowerCase() === h) &&
+                typeof s.nonce === "number" &&
+                s.nonce === n
+            ) || null
+          );
+        }
+
+        function applyStoredToExecuteForm(stored) {
+          if (!stored) return;
+          document.getElementById("execTo").value = stored.to;
+          document.getElementById("execValue").value = stored.value || "0";
+          document.getElementById("execData").value = stored.data || "0x";
+          document.getElementById("op-call").checked = true;
+          const hint = document.getElementById("execAutofillHint");
+          if (hint) {
+            hint.style.display = "block";
+            const sym = stored.tokenSymbol || "token";
+            const amt =
+              stored.amount && stored.tokenDecimals != null
+                ? ethers.formatUnits(stored.amount, stored.tokenDecimals)
+                : stored.amount;
+            hint.textContent =
+              "Loaded from localStorage: " +
+              sym +
+              " transfer " +
+              (amt || "?") +
+              " → " +
+              (stored.recipient || "").slice(0, 10) +
+              "…";
+          }
+        }
+
+        function formatCountdown(ms) {
+          if (ms <= 0) return "0s";
+          const s = Math.floor(ms / 1000);
+          const h = Math.floor(s / 3600);
+          const m = Math.floor((s % 3600) / 60);
+          const sec = s % 60;
+          if (h > 0) return h + "h " + m + "m " + sec + "s";
+          if (m > 0) return m + "m " + sec + "s";
+          return sec + "s";
+        }
+
+        function setWalletStatus(text, kind) {
+          const box = document.getElementById("wallet-status");
+          const icon = kind === "info" ? '<div class="spinner"></div>' :
+            kind === "success" ? '<div class="status-icon">\u2713</div>' :
+            kind === "error" ? '<div class="status-icon">!</div>' :
+            '<div class="status-icon">1</div>';
+          box.className = "status-box " + (kind || "waiting");
+          box.innerHTML = icon + "<span>" + text + "</span>";
+        }
+
+        let provider = null;
+        let signer = null;
+        let connectedAddress = null;
+        let pollTimer = null;
+        let countdownTimer = null;
+        let celoBalanceTimer = null;
+
+        const safeInput = document.getElementById("safeInput");
+        const delayOverride = document.getElementById("delayOverride");
+        const refreshBtn = document.getElementById("refreshBtn");
+        const queueMount = document.getElementById("queue-mount");
+        const delayMeta = document.getElementById("delay-meta");
+        const executePanel = document.getElementById("execute-panel");
+        const skipPanel = document.getElementById("skip-panel");
+
+        let lastQueueInfo = null;
+        let lastPending = [];
+        let lastHead = null;
+
+        function getDelayAddress() {
+          const raw = delayOverride.value.trim();
+          if (raw) return ethers.getAddress(raw);
+          const s = safeInput.value.trim();
+          if (!s) throw new Error("Enter Safe address");
+          return predictDelayModAddress(s);
+        }
+
+        function updateDelayModulePreview() {
+          const el = document.getElementById("delayModulePreview");
+          const rawOv = delayOverride.value.trim();
+          try {
+            if (rawOv) {
+              const addr = ethers.getAddress(rawOv);
+              el.textContent = addr + " (manual override)";
+              el.style.color = "#111";
+              return;
+            }
+            const s = safeInput.value.trim();
+            if (!s) {
+              el.textContent =
+                "Enter a valid Safe address to see the predicted delay module (CREATE2).";
+              el.style.color = "#666";
+              return;
+            }
+            ethers.getAddress(s);
+            const predicted = predictDelayModAddress(s);
+            el.textContent = predicted + " (predicted from Safe)";
+            el.style.color = "#111";
+          } catch (e) {
+            el.textContent = "Cannot derive delay module: " + e.message;
+            el.style.color = "#dc2626";
+          }
+        }
+
+        function parseExecArgs() {
+          const to = ethers.getAddress(document.getElementById("execTo").value.trim());
+          const valueStr = document.getElementById("execValue").value.trim() || "0";
+          let data = document.getElementById("execData").value.trim() || "0x";
+          if (data === "") data = "0x";
+          if (!data.startsWith("0x")) data = "0x" + data;
+          const value = BigInt(valueStr);
+          const op = parseInt(document.querySelector('input[name="execOp"]:checked').value, 10);
+          return { to, value, data, op };
+        }
+
+        async function verifyHashOnChain(delayContract, txNonce) {
+          try {
+            const args = parseExecArgs();
+            const expected = await delayContract.getTxHash(txNonce);
+            const computed = await delayContract.getTransactionHash(
+              args.to,
+              args.value,
+              args.data,
+              args.op
+            );
+            const match = expected.toLowerCase() === computed.toLowerCase();
+            return { match, expected, computed, args };
+          } catch (e) {
+            return { match: false, error: e.message };
+          }
+        }
+
+        function updateHashStatus() {
+          const box = document.getElementById("hash-status");
+          if (!lastHead || !lastQueueInfo) {
+            box.style.display = "none";
+            return;
+          }
+          const prov = provider;
+          if (!prov) return;
+          let delayAddr;
+          try {
+            delayAddr = getDelayAddress();
+          } catch (_) {
+            box.style.display = "none";
+            return;
+          }
+          const delay = new ethers.Contract(delayAddr, DELAY_ABI, prov);
+          verifyHashOnChain(delay, lastQueueInfo.txNonce).then((r) => {
+            if (r.error) {
+              box.style.display = "flex";
+              box.className = "status-box error";
+              box.innerHTML = '<div class="status-icon">!</div><span>' + r.error + "</span>";
+              return;
+            }
+            box.style.display = "flex";
+            if (r.match) {
+              box.className = "status-box success";
+              box.innerHTML =
+                '<div class="status-icon">\u2713</div><span>Parameters match on-chain <span class="mono">getTxHash</span>.</span>';
+            } else {
+              box.className = "status-box error";
+              box.innerHTML =
+                '<div class="status-icon">!</div><span>Hash mismatch. Expected <span class="mono">' +
+                r.expected +
+                "</span>, got <span class=\"mono\">" +
+                r.computed +
+                "</span></span>";
+            }
+            const execBtn = document.getElementById("executeBtn");
+            const canExec =
+              r.match &&
+              lastHead.isCooledDown &&
+              !lastHead.isExpired &&
+              !lastPending.some((t) => t.isExpired);
+            execBtn.disabled = !canExec;
+          });
+        }
+
+        ["execTo", "execValue", "execData"].forEach((id) => {
+          document.getElementById(id).addEventListener("input", () => {
+            updateHashStatus();
+          });
+        });
+        document.querySelectorAll('input[name="execOp"]').forEach((r) => {
+          r.addEventListener("change", updateHashStatus);
+        });
+
+        function renderQueue() {
+          queueMount.innerHTML = "";
+          if (!lastQueueInfo) return;
+
+          if (!lastQueueInfo.hasPending) {
+            queueMount.innerHTML =
+              '<div class="status-box success"><div class="status-icon">\u2713</div><span>No pending transactions in the delay queue.</span></div>';
+            executePanel.style.display = "none";
+            skipPanel.style.display = "none";
+            return;
+          }
+
+          let safeForStorage = null;
+          try {
+            if (safeInput.value.trim()) safeForStorage = ethers.getAddress(safeInput.value.trim());
+          } catch (_) {}
+
+          lastPending.forEach((tx) => {
+            const isHead = tx.nonce === lastQueueInfo.txNonce;
+            const div = document.createElement("div");
+            div.className = "queue-item" + (isHead ? " head" : "");
+            let badgeClass = "cool";
+            let badgeText = "Cooling down";
+            if (tx.isExpired) { badgeClass = "expired"; badgeText = "Expired"; }
+            else if (tx.isCooledDown) { badgeClass = "ready"; badgeText = "Ready to execute"; }
+            let storedHtml = "";
+            if (safeForStorage) {
+              const st = findStoredForQueueItem(safeForStorage, tx.hash, tx.nonce);
+              if (st) {
+                const amt =
+                  st.amount != null && st.tokenDecimals != null
+                    ? ethers.formatUnits(st.amount, st.tokenDecimals)
+                    : st.amount;
+                storedHtml =
+                  '<div class="kv"><span>localStorage</span><span>' +
+                  (st.tokenSymbol || "ERC20") +
+                  " " +
+                  amt +
+                  " → " +
+                  (st.recipient || "").slice(0, 10) +
+                  "…</span></div>";
+              }
+            }
+            div.innerHTML =
+              "<h3>Nonce " +
+              tx.nonce.toString() +
+              (isHead ? " <span class=\"badge " + badgeClass + "\">" + badgeText + "</span>" : " <span class=\"badge cool\">Pending</span>") +
+              "</h3>" +
+              '<div class="kv"><span>Tx hash</span><span class="mono">' +
+              (tx.hash && tx.hash !== ethers.ZeroHash ? tx.hash : "(empty)") +
+              "</span></div>" +
+              storedHtml +
+              '<div class="kv"><span>Created (UTC)</span><span>' +
+              new Date(Number(tx.creationTimestamp) * 1000).toISOString() +
+              "</span></div>" +
+              '<div class="kv"><span>Cooldown ends</span><span data-cd="' +
+              tx.nonce +
+              '" class="mono cd-target">—</span></div>' +
+              '<div class="kv"><span>Expires</span><span>' +
+              new Date(Number(tx.expirationTimestamp) * 1000).toISOString() +
+              "</span></div>";
+            queueMount.appendChild(div);
+          });
+
+          lastHead = lastPending.find((t) => t.nonce === lastQueueInfo.txNonce) || null;
+          executePanel.style.display = lastHead ? "block" : "none";
+          skipPanel.style.display = lastPending.some((t) => t.isExpired) ? "block" : "none";
+
+          const autofill = document.getElementById("execAutofillHint");
+          if (lastHead && safeForStorage) {
+            const st = findStoredForQueueItem(safeForStorage, lastHead.hash, lastHead.nonce);
+            if (st) {
+              applyStoredToExecuteForm(st);
+            } else if (autofill) {
+              autofill.style.display = "none";
+            }
+          } else if (autofill) {
+            autofill.style.display = "none";
+          }
+
+          if (lastHead) {
+            updateHashStatus();
+          }
+          updateCountdownLabels();
+        }
+
+        function updateCountdownLabels() {
+          if (!lastQueueInfo) return;
+          const now = Math.floor(Date.now() / 1000);
+          document.querySelectorAll(".cd-target").forEach((el) => {
+            const nonce = el.getAttribute("data-cd");
+            const tx = lastPending.find((t) => t.nonce.toString() === nonce);
+            if (!tx) return;
+            const end = Number(tx.creationTimestamp) + Number(lastQueueInfo.cooldown);
+            if (tx.isCooledDown) {
+              el.textContent = "Elapsed — ready if not expired";
+              return;
+            }
+            const leftSec = end - now;
+            el.textContent = leftSec > 0 ? formatCountdown(leftSec * 1000) + " remaining" : "Cooldown elapsed";
+          });
+        }
+
+        async function fetchQueue() {
+          if (!provider) return;
+          let delayAddr;
+          try {
+            delayAddr = getDelayAddress();
+          } catch (e) {
+            setWalletStatus(e.message, "error");
+            return;
+          }
+
+          const delay = new ethers.Contract(delayAddr, DELAY_ABI, provider);
+          try {
+            const code = await provider.getCode(delayAddr);
+            if (!code || code === "0x") {
+              throw new Error(
+                "No contract at predicted delay module " +
+                  delayAddr +
+                  ". Check Safe address, that the wallet RPC is Celo (42220), or paste the real delay module under override. " +
+                  "Empty return from queueNonce() usually means this address has no code."
+              );
+            }
+            const [txNonce, queueNonce, cooldown, expiration] = await Promise.all([
+              delay.txNonce(),
+              delay.queueNonce(),
+              delay.txCooldown(),
+              delay.txExpiration(),
+            ]);
+
+            const hasPending = txNonce !== queueNonce;
+            const currentTime = BigInt(Math.floor(Date.now() / 1000));
+            const pending = [];
+
+            if (hasPending && queueNonce > txNonce) {
+              const from = Number(txNonce);
+              const to = Number(queueNonce);
+              if (to - from > 50) {
+                log("Warning: queue depth > 50; only fetching first 50 nonces.");
+              }
+              const cap = Math.min(to, from + 50);
+              for (let i = from; i < cap; i++) {
+                const nonce = BigInt(i);
+                let createdAt;
+                let hash;
+                try {
+                  createdAt = await delay.getTxCreatedAt(nonce);
+                } catch (_) {
+                  createdAt = 0n;
+                }
+                try {
+                  hash = await delay.getTxHash(nonce);
+                } catch (_) {
+                  hash = ethers.ZeroHash;
+                }
+                if (createdAt && createdAt > 0n) {
+                  const expirationTimestamp = createdAt + expiration;
+                  const cooldownTimestamp = createdAt + cooldown;
+                  const isExpired = expiration > 0n && currentTime > expirationTimestamp;
+                  const isCooledDown = currentTime > cooldownTimestamp;
+                  pending.push({
+                    nonce,
+                    hash,
+                    creationTimestamp: createdAt,
+                    expirationTimestamp,
+                    isExpired,
+                    isCooledDown,
+                  });
+                }
+              }
+            }
+
+            lastQueueInfo = {
+              hasPending,
+              txNonce,
+              queueNonce,
+              cooldown,
+              expiration,
+            };
+            lastPending = pending;
+
+            updateDelayModulePreview();
+            document.getElementById("nonceLine").textContent =
+              "txNonce: " + txNonce.toString() + " | queueNonce: " + queueNonce.toString() +
+              " | cooldown: " + cooldown.toString() + "s | expiration: " + expiration.toString() + "s";
+            delayMeta.style.display = "block";
+
+            renderQueue();
+            log("Queue refreshed.");
+          } catch (e) {
+            log("Fetch error: " + e.message);
+            queueMount.innerHTML =
+              '<div class="status-box error"><div class="status-icon">!</div><span>' +
+              e.message +
+              "</span></div>";
+          }
+        }
+
+        function startPolling() {
+          stopPolling();
+          pollTimer = setInterval(fetchQueue, 5000);
+          countdownTimer = setInterval(() => {
+            updateCountdownLabels();
+            if (lastHead && !lastHead.isCooledDown && lastQueueInfo) {
+              const end =
+                Number(lastHead.creationTimestamp) + Number(lastQueueInfo.cooldown);
+              if (Math.floor(Date.now() / 1000) >= end) fetchQueue();
+            }
+            updateHashStatus();
+          }, 1000);
+        }
+
+        function stopPolling() {
+          if (pollTimer) clearInterval(pollTimer);
+          if (countdownTimer) clearInterval(countdownTimer);
+          pollTimer = null;
+          countdownTimer = null;
+        }
+
+        function stopCeloBalancePolling() {
+          if (celoBalanceTimer) clearInterval(celoBalanceTimer);
+          celoBalanceTimer = null;
+        }
+
+        async function refreshCeloBalance() {
+          const el = document.getElementById("celoBalance");
+          if (!provider || !connectedAddress) {
+            el.style.display = "none";
+            el.textContent = "";
+            return;
+          }
+          try {
+            const wei = await provider.getBalance(connectedAddress);
+            el.textContent =
+              "CELO balance: " + ethers.formatEther(wei) + " CELO (chain " + CELO_CHAIN_ID.toString() + ")";
+            el.style.display = "block";
+          } catch (e) {
+            el.textContent = "CELO balance: could not load (" + e.message + ")";
+            el.style.display = "block";
+          }
+        }
+
+        function startCeloBalancePolling() {
+          stopCeloBalancePolling();
+          refreshCeloBalance();
+          celoBalanceTimer = setInterval(refreshCeloBalance, 25000);
+        }
+
+        async function refreshSafeTokenBalance() {
+          const el = document.getElementById("safeTokenBalance");
+          const sel = document.getElementById("withdrawToken").value;
+          const token = TOKENS[sel];
+          if (!provider || !safeInput.value.trim()) {
+            el.textContent = "Enter a Safe address and connect a wallet to load balance.";
+            el.style.color = "#888";
+            return;
+          }
+          let safe;
+          try {
+            safe = ethers.getAddress(safeInput.value.trim());
+          } catch (e) {
+            el.textContent = "Invalid Safe address.";
+            el.style.color = "#dc2626";
+            return;
+          }
+          try {
+            const erc20 = new ethers.Contract(token.address, ERC20_ABI, provider);
+            const bal = await erc20.balanceOf(safe);
+            el.textContent =
+              "Safe " +
+              token.tokenSymbol +
+              " balance: " +
+              ethers.formatUnits(bal, token.decimals) +
+              " " +
+              token.tokenSymbol;
+            el.style.color = "#333";
+          } catch (e) {
+            el.textContent = "Could not load token balance: " + e.message;
+            el.style.color = "#dc2626";
+          }
+        }
+
+        document.getElementById("connectBtn").addEventListener("click", async () => {
+          if (!window.ethereum) {
+            setWalletStatus("No wallet (MetaMask / Rabby, etc.)", "error");
+            return;
+          }
+          try {
+            setWalletStatus("Connecting\u2026", "info");
+            provider = new ethers.BrowserProvider(window.ethereum);
+            const net = await provider.getNetwork();
+            if (net.chainId !== CELO_CHAIN_ID) {
+              log(
+                "Warning: chainId " +
+                  net.chainId +
+                  " — expected Celo mainnet (" +
+                  CELO_CHAIN_ID +
+                  "). Switch network for correct delay-module reads."
+              );
+            }
+            signer = await provider.getSigner();
+            connectedAddress = await signer.getAddress();
+            setWalletStatus("Connected: " + connectedAddress, "success");
+            document.getElementById("connectBtn").disabled = true;
+            document.getElementById("disconnectBtn").disabled = false;
+            refreshBtn.disabled = false;
+            document.getElementById("queueWithdrawBtn").disabled = false;
+            startCeloBalancePolling();
+            log("Connected " + connectedAddress);
+            await refreshSafeTokenBalance();
+            if (safeInput.value.trim()) {
+              await fetchQueue();
+              startPolling();
+            }
+          } catch (e) {
+            setWalletStatus(e.message, "error");
+            log("Connect error: " + e.message);
+          }
+        });
+
+        document.getElementById("disconnectBtn").addEventListener("click", () => {
+          stopPolling();
+          stopCeloBalancePolling();
+          provider = null;
+          signer = null;
+          connectedAddress = null;
+          document.getElementById("connectBtn").disabled = false;
+          document.getElementById("disconnectBtn").disabled = true;
+          refreshBtn.disabled = true;
+          delayMeta.style.display = "none";
+          queueMount.innerHTML = "";
+          executePanel.style.display = "none";
+          skipPanel.style.display = "none";
+          document.getElementById("celoBalance").style.display = "none";
+          document.getElementById("celoBalance").textContent = "";
+          document.getElementById("queueWithdrawBtn").disabled = true;
+          document.getElementById("queueWithdrawStatus").style.display = "none";
+          setWalletStatus("Wallet not connected", "waiting");
+          log("Disconnected");
+        });
+
+        refreshBtn.addEventListener("click", () => {
+          refreshCeloBalance();
+          refreshSafeTokenBalance();
+          fetchQueue();
+          if (provider && !pollTimer) startPolling();
+        });
+
+        function onSafeOrDelayInput() {
+          updateDelayModulePreview();
+          refreshSafeTokenBalance();
+          if (provider) {
+            fetchQueue();
+            if (!pollTimer) startPolling();
+          }
+        }
+        safeInput.addEventListener("input", updateDelayModulePreview);
+        safeInput.addEventListener("change", onSafeOrDelayInput);
+        delayOverride.addEventListener("input", updateDelayModulePreview);
+        delayOverride.addEventListener("change", () => {
+          updateDelayModulePreview();
+          if (provider) fetchQueue();
+        });
+        updateDelayModulePreview();
+
+        document.getElementById("withdrawToken").addEventListener("change", () => {
+          refreshSafeTokenBalance();
+        });
+
+        document.getElementById("queueWithdrawBtn").addEventListener("click", async () => {
+          const statusEl = document.getElementById("queueWithdrawStatus");
+          statusEl.style.display = "block";
+          statusEl.style.color = "#888";
+          if (!signer || !provider) {
+            statusEl.textContent = "Connect a wallet first.";
+            return;
+          }
+          let safe;
+          try {
+            safe = ethers.getAddress(safeInput.value.trim());
+          } catch (e) {
+            statusEl.textContent = "Enter a valid Safe address.";
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+          const sel = document.getElementById("withdrawToken").value;
+          const tokenMeta = TOKENS[sel];
+          let recipient;
+          try {
+            recipient = ethers.getAddress(document.getElementById("withdrawRecipient").value.trim());
+          } catch (e) {
+            statusEl.textContent = "Invalid recipient address.";
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+          const amountStr = document.getElementById("withdrawAmount").value.trim();
+          if (!amountStr) {
+            statusEl.textContent = "Enter an amount.";
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+          let amountWei;
+          try {
+            amountWei = ethers.parseUnits(amountStr, tokenMeta.decimals);
+          } catch (e) {
+            statusEl.textContent = "Invalid amount: " + e.message;
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+          if (amountWei <= 0n) {
+            statusEl.textContent = "Amount must be greater than zero.";
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+          const erc20 = new ethers.Contract(tokenMeta.address, ERC20_ABI, provider);
+          try {
+            const bal = await erc20.balanceOf(safe);
+            if (bal < amountWei) {
+              statusEl.textContent = "Insufficient " + tokenMeta.tokenSymbol + " balance on the Safe.";
+              statusEl.style.color = "#dc2626";
+              return;
+            }
+          } catch (e) {
+            statusEl.textContent = "Balance check failed: " + e.message;
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+
+          const tokenIface = new ethers.Interface(ERC20_ABI);
+          const transferData = tokenIface.encodeFunctionData("transfer", [recipient, amountWei]);
+          const innerTx = {
+            to: tokenMeta.address,
+            value: 0n,
+            data: transferData,
+          };
+
+          let delayModAddress;
+          try {
+            delayModAddress = getDelayAddress();
+          } catch (e) {
+            statusEl.textContent = e.message;
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+          try {
+            const codeAt = await provider.getCode(delayModAddress);
+            if (!codeAt || codeAt === "0x") {
+              statusEl.textContent =
+                "No contract at delay module " +
+                delayModAddress +
+                ". Fix Safe / chain (Celo 42220) or set the override to the deployed delay address.";
+              statusEl.style.color = "#dc2626";
+              return;
+            }
+          } catch (e) {
+            statusEl.textContent = "RPC check failed: " + e.message;
+            statusEl.style.color = "#dc2626";
+            return;
+          }
+
+          const btn = document.getElementById("queueWithdrawBtn");
+          btn.disabled = true;
+          statusEl.textContent = "Sign EIP-712 in your wallet\u2026";
+          statusEl.style.color = "#1d4ed8";
+          try {
+            const { domain, types, message, encodedData, salt } =
+              generateModifierTypedData(safe, innerTx, delayModAddress);
+            const signature = await signer.signTypedData(domain, types, message);
+            const data = buildEnqueueCalldata(encodedData, salt, signature);
+            log("Sending enqueue tx to delay module\u2026");
+            const tx = await signer.sendTransaction({
+              to: delayModAddress,
+              data: data,
+              value: 0n,
+            });
+            log("Enqueue tx: " + tx.hash);
+            await tx.wait();
+            log("Enqueue confirmed.");
+
+            const delay = new ethers.Contract(delayModAddress, DELAY_ABI, provider);
+            const queueNonce = await delay.queueNonce();
+            const txNonce = queueNonce - 1n;
+            const delayTxHash = await delay.getTxHash(txNonce);
+
+            storeTransaction(safe, {
+              to: innerTx.to,
+              value: innerTx.value.toString(),
+              data: innerTx.data,
+              tokenAddress: tokenMeta.address,
+              tokenSymbol: tokenMeta.tokenSymbol,
+              amount: amountWei.toString(),
+              tokenDecimals: tokenMeta.decimals,
+              recipient: recipient,
+              timestamp: Date.now(),
+              txHash: delayTxHash,
+              nonce: Number(txNonce),
+            });
+
+            statusEl.textContent =
+              "Queued. Delay tx hash " + delayTxHash.slice(0, 14) + "\u2026 Cooldown started.";
+            statusEl.style.color = "#16a34a";
+            document.getElementById("withdrawRecipient").value = "";
+            document.getElementById("withdrawAmount").value = "";
+            await fetchQueue();
+            await refreshSafeTokenBalance();
+            refreshCeloBalance();
+            if (!pollTimer) startPolling();
+          } catch (e) {
+            log("Queue withdraw error: " + (e.reason || e.message));
+            statusEl.textContent = "Error: " + (e.reason || e.message);
+            statusEl.style.color = "#dc2626";
+          }
+          btn.disabled = false;
+        });
+
+        document.getElementById("executeBtn").addEventListener("click", async () => {
+          if (!signer || !lastQueueInfo || !lastHead) return;
+          let safeForRemove = null;
+          try {
+            if (safeInput.value.trim()) safeForRemove = ethers.getAddress(safeInput.value.trim());
+          } catch (_) {}
+          const headBefore = lastHead;
+          let delayAddr;
+          try {
+            delayAddr = getDelayAddress();
+          } catch (e) {
+            log(e.message);
+            return;
+          }
+          const delay = new ethers.Contract(delayAddr, DELAY_ABI, signer);
+          const btn = document.getElementById("executeBtn");
+          btn.disabled = true;
+          try {
+            const args = parseExecArgs();
+            const check = await verifyHashOnChain(delay, lastQueueInfo.txNonce);
+            if (!check.match) {
+              log("Refusing to send: hash mismatch");
+              btn.disabled = false;
+              updateHashStatus();
+              return;
+            }
+            log("Sending executeNextTx\u2026");
+            const tx = await delay.executeNextTx(args.to, args.value, args.data, args.op);
+            log("Tx sent: " + tx.hash);
+            await tx.wait();
+            log("Confirmed.");
+            if (safeForRemove && headBefore) {
+              const st = findStoredForQueueItem(safeForRemove, headBefore.hash, headBefore.nonce);
+              if (st) removeTransaction(safeForRemove, st.timestamp);
+            }
+            await fetchQueue();
+            refreshCeloBalance();
+            refreshSafeTokenBalance();
+          } catch (e) {
+            log("Execute error: " + (e.reason || e.message));
+          }
+          btn.disabled = false;
+          updateHashStatus();
+        });
+
+        document.getElementById("skipExpiredBtn").addEventListener("click", async () => {
+          if (!signer) return;
+          let delayAddr;
+          try {
+            delayAddr = getDelayAddress();
+          } catch (e) {
+            log(e.message);
+            return;
+          }
+          const delay = new ethers.Contract(delayAddr, DELAY_ABI, signer);
+          try {
+            log("Sending skipExpired\u2026");
+            const tx = await delay.skipExpired();
+            log("Tx sent: " + tx.hash);
+            await tx.wait();
+            log("Confirmed.");
+            await fetchQueue();
+            refreshCeloBalance();
+            refreshSafeTokenBalance();
+          } catch (e) {
+            log("skipExpired error: " + (e.reason || e.message));
+          }
+        });
+      })();
+    </script>
+  </body>
+</html>
